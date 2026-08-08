@@ -87,6 +87,60 @@
       (should (= 1 (lnav--chunk-before-open root)))
       (should (null (lnav--chunk-before-close root))))))
 
+(ert-deftest lnav-tab-in ()
+  (lnav-test-with-buffer "{}"
+    (goto-char 1)
+    (lnav-jump-forward)
+    (should (= 2 (point)))))
+
+(ert-deftest lnav-tab-out-of-empty ()
+  (lnav-test-with-buffer "{}"
+    (goto-char 2)
+    (lnav-jump-forward)
+    (should (= 3 (point)))))
+
+(ert-deftest lnav-tab-two-taps ()
+  (lnav-test-with-buffer "{}"
+    (goto-char 1)
+    (lnav-jump-forward)
+    (lnav-jump-forward)
+    (should (= 3 (point)))))
+
+(ert-deftest lnav-backtab-out-of-empty ()
+  (lnav-test-with-buffer "{}"
+    (goto-char 2)
+    (lnav-jump-backward)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-backtab-into-empty ()
+  (lnav-test-with-buffer "{}"
+    (goto-char 3)
+    (lnav-jump-backward)
+    (should (= 2 (point)))))
+
+(ert-deftest lnav-tab-multi-char-pair ()
+  (lnav-test-with-buffer "\\begin{}"
+    (let ((lnav-pairs '(("\\begin{" . "\\end{"))))
+      (goto-char 1)
+      (lnav-jump-forward)
+      (should (= 8 (point)))
+      (lnav-jump-forward)
+      (should (= 9 (point))))))
+
+(ert-deftest lnav-backtab-multi-char-pair ()
+  (lnav-test-with-buffer "\\begin{}\\end{"
+    (let ((lnav-pairs '(("\\begin{" . "\\end{"))))
+      (goto-char 14)
+      (lnav-jump-backward)
+      (should (= 9 (point))))))
+
+(ert-deftest lnav-evil-text-object-range ()
+  (skip-unless (require 'evil nil t))
+  (lnav-test-with-buffer "(ab)"
+    (goto-char 3)
+    (should (equal (list 2 4) (lnav--evil-chunk-range t)))
+    (should (equal (list 1 5) (lnav--evil-chunk-range nil)))))
+
 (ert-deftest lnav-chunk-at-point-innermost ()
   (lnav-test-with-buffer "(a(b)c)"
     (goto-char 4)

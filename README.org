@@ -1,0 +1,177 @@
+#+TITLE: lnav — mode-agnostic bracket navigation and editing
+
+*lnav* is a mode-agnostic Emacs package for moving through and editing
+bracketed structures: parentheses, brackets, braces, quotes, and any
+user-defined pairs.
+
+Every pair is modeled as a *chunk* carrying four positions — before
+open, after open, before close, after close — and chunks nest.  TAB
+jumps in and out of pairs (tabjumpout style), chunk navigation walks
+the nesting, and editing commands wrap, strip, or rewrap delimiters.
+Works in any major mode and integrates with evil (`il`/`al` text
+objects) when present.
+
+* Features
+
+- TAB / backtab jump through brackets
+- Chunk tree: each `()`, `[]`, `{}`, `""`, `''`, ... is a nestable chunk
+- Jump to all four positions of a chunk (before/after its open/close)
+- Descend / ascend nesting, next / previous chunk boundary
+- Select chunk contents or chunk including delimiters
+- Surround a region or chunk with any delimiter
+- Delete / change the enclosing pair (unwrap / rewrap)
+- Optional evil integration: `il`, `al` text objects and surround keys
+- Coexists with smartparens: edits use programmatic insert, so no
+  double pairs
+
+* Installation
+
+Place `lnav.el` (and `lnav-evil.el` for evil bindings) on your
+`load-path`:
+
+#+begin_src emacs-lisp
+  (add-to-list 'load-path "~/path/to/lnav")
+  (require 'lnav)
+  (global-lnav-mode 1)      ; or (lnav-mode 1) per buffer
+#+end_src
+
+`lnav-evil.el` is loaded automatically once evil is present; it is
+optional and never required by the core.
+
+* TAB navigation
+
+Works in any major mode.  `lnav-jump-forward` on TAB, `lnav-jump-backward`
+on backtab:
+
+| Buffer   | Command        | Result  |
+|----------+----------------+---------|
+| `{|`     | TAB            | `{|}`   |
+| `{|}`    | TAB            | `{}|`   |
+| `|{}`    | TAB            | `{|}`   |
+| `|{}`    | TAB TAB        | `{}|`   |
+| `{}|`    | backtab        | `{|}`   |
+
+When no pair is in scope, TAB falls back to a per-mode function
+(default: indent, with org-table awareness).  Snippet frameworks
+(yasnippet, tempel) take precedence over pair jumps.
+
+* Chunk navigation
+
+Each 1-char bracket pair is a chunk; chunks nest.  `il`-style editing
+needs the four positions of a chunk, all reachable:
+
+| Keys         | Command                     | Moves to                        |
+|--------------+-----------------------------+---------------------------------|
+| `C-c n`      | `lnav-next-chunk`           | next chunk boundary             |
+| `C-c p`      | `lnav-previous-chunk`       | previous chunk boundary         |
+| `C-c b`      | `lnav-jump-before-open`     | before opening delimiter        |
+| `C-c a`      | `lnav-jump-after-open`      | after opening delimiter         |
+| `C-c c`      | `lnav-jump-before-close`    | before closing delimiter        |
+| `C-c d`      | `lnav-jump-after-close`     | after closing delimiter         |
+| `C-c i`      | `lnav-chunk-in`             | first child chunk               |
+| `C-c o`      | `lnav-chunk-out`            | parent chunk                    |
+| `C-c s`      | `lnav-select-chunk`         | select chunk contents           |
+| `C-c S`      | `lnav-select-chunk-around`  | select chunk incl. delimiters   |
+
+Jump and select commands act on the *innermost chunk containing
+point*.
+
+* Editing
+
+| Keys    | Command                     | Effect                                  |
+|---------+-----------------------------+-----------------------------------------|
+| `C-c w` | `lnav-surround`             | wrap region (or chunk) in a delimiter   |
+| `C-c x` | `lnav-delete-enclosing-pair`| strip the enclosing pair's delimiters   |
+| `C-c r` | `lnav-change-enclosing-pair`| replace the enclosing pair's delimiters |
+
+- `lnav-surround` prompts for a delimiter.  With an active region it
+  wraps the region; otherwise it wraps the contents of the chunk at
+  point.  Enter `(` to get `(...)`, `"` to get `"..."`, or any string
+  (multi-char works).
+- `lnav-delete-enclosing-pair` removes the delimiters of the chunk at
+  point, keeping the contents — e.g. point inside `(foo)` leaves `foo`.
+- `lnav-change-enclosing-pair` rewraps, e.g. `(foo)` to `[foo]`.
+
+These commands insert/delete programmatically, so smartparens and
+electric-pair-mode never add or remove a second pair.
+
+* Evil integration
+
+Loaded when evil is available.  Text objects usable with any
+operator:
+
+- `il` — inside the chunk (excludes delimiters): `dil`, `cil`, `yal`...
+- `al` — around the chunk (includes delimiters): `dal`, `val`...
+
+Surround keys:
+
+| Keys | Command                     |
+|------+-----------------------------|
+| `gs` | surround region (visual) or chunk (normal) |
+| `gS` | delete enclosing pair       |
+| `gC` | change enclosing pair       |
+
+All bindings are rebindable.
+
+* Defining your own pairs
+
+#+begin_src emacs-lisp
+  (lnav-add-pair "\\begin{" "\\end{")   ; LaTeX
+  (lnav-add-pair "$" "$")               ; inline math
+  (lnav-add-pair "**" "**")             ; markdown bold
+#+end_src
+
+Or customize `lnav-pairs` directly:
+
+#+begin_src emacs-lisp
+  (setq lnav-pairs '(("(" . ")") ("\\begin{" . "\\end{")))
+#+end_src
+
+Rules:
+- Pairs whose open and close differ (`()`, `[]`, `{}`, ...) nest in
+  the chunk tree.
+- Pairs with equal open and close (`"`, `'`, `` ` ``, `$`, `**`) are
+  non-nesting toggles: each occurrence alternates open/close at its
+  bracket nesting level, matching vim `i"` semantics.  This is
+  approximate — the apostrophe inside `"don't"` while a double quote
+  is open may mis-pair.
+- Multi-char pairs (`\begin{}`, `**`) participate in TAB jumps but not
+  in the chunk tree.
+
+* Configuration
+
+| Variable                 | Default                 | Purpose                                |
+|--------------------------+-------------------------+----------------------------------------|
+| `lnav-pairs`             | `()[]{}` `""` `''` `` ` `` | registered pairs                  |
+| `lnav-fallback-alist`    | default indent fallback | per-mode TAB fallback                  |
+| `lnav-excluded-modes`    | nil                     | modes where `lnav-mode` is disabled    |
+| `lnav-enable-backward`   | t                       | enable backtab jumps                   |
+| `lnav-scan-distance`     | 32                      | chars to scan when matching multi-char pairs |
+
+Per-mode fallback:
+
+#+begin_src emacs-lisp
+  (lnav-set-fallback #'org-cycle 'org-mode)
+#+end_src
+
+* Tests
+
+#+begin_src sh
+  emacs -Q --batch -L . -l lnav-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Pass `-L <evil-dir>` on the load path to also run the evil text-object
+tests.
+
+* Limitations
+
+- Chunk parsing is regex/scan based, not syntax-aware: quotes in
+  strings and apostrophes may mis-pair (see above).
+- The chunk tree rescans the buffer on each navigation command — fine
+  for code-scale buffers, slow for multi-megabyte logs.
+- Unmatched brackets never error; the chunk keeps its open positions
+  and a nil close.
+
+* License
+
+GPL-3.0-or-later.  See =LICENSE=.

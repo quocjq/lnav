@@ -1001,8 +1001,9 @@ navigate bracketed structures."
 
 (defun lnav-on ()
   "Enable `lnav-mode' for the current buffer unless its major
-mode is in `lnav-excluded-modes'."
-  (unless (memq major-mode lnav-excluded-modes)
+mode is in `lnav-excluded-modes' or it is a minibuffer buffer."
+  (unless (or (minibufferp)
+              (memq major-mode lnav-excluded-modes))
     (lnav-mode 1)))
 
 (provide 'lnav)

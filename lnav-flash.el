@@ -213,7 +213,7 @@ One char per match up to the alphabet length; two chars beyond."
 (defun lnav--flash-run (matches)
   "Run the flash selection loop over MATCHES.
 Returns the selected match plist, or nil if cancelled."
-  (let ((matches (lnav--flash-sort-matches matches))
+  (let ((matches (lnav--flash-assign-labels (lnav--flash-sort-matches matches)))
         (selected nil)
         (cancelled nil)
         (pending nil)

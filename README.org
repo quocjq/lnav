@@ -4,8 +4,8 @@
 bracketed structures: parentheses, brackets, braces, quotes, and any
 user-defined pairs.
 
-Every pair is modeled as a *chunk* carrying four positions — before
-open, after open, before close, after close — and chunks nest.  TAB
+Every pair is a *chunk* carrying four positions: before open, after
+open, before close, after close.  Chunks nest.  TAB
 jumps in and out of pairs (tabjumpout style), chunk navigation walks
 the nesting, and editing commands wrap, strip, or rewrap delimiters.
 Works in any major mode and integrates with evil (`il`/`al` text
@@ -19,7 +19,14 @@ objects) when present.
 - Descend / ascend nesting, next / previous chunk boundary
 - Select chunk contents or chunk including delimiters
 - Surround a region or chunk with any delimiter
+- Slurp, barf, kill, transpose, raise, splice structural editing
+- Full smartparens-style surface: hybrid kill, delete/copy/clone,
+  convolute, absorb, emit, extract, split/join, swap, splice-killing,
+  add-to-previous/next, select-next-thing
+- Flash label jumping (flash.nvim style): chunks, chars, words, search
+  (regex/fuzzy), multi-window, treesitter nodes
 - Delete / change the enclosing pair (unwrap / rewrap)
+- Auto-pair typing mode, strict balance mode, matching-pair highlight
 - Optional evil integration: `il`, `al` text objects and surround keys
 - Coexists with smartparens: edits use programmatic insert, so no
   double pairs
@@ -89,11 +96,96 @@ point*.
   point.  Enter `(` to get `(...)`, `"` to get `"..."`, or any string
   (multi-char works).
 - `lnav-delete-enclosing-pair` removes the delimiters of the chunk at
-  point, keeping the contents — e.g. point inside `(foo)` leaves `foo`.
+  point, keeping the contents.  Point inside `(foo)` leaves `foo`.
 - `lnav-change-enclosing-pair` rewraps, e.g. `(foo)` to `[foo]`.
 
 These commands insert/delete programmatically, so smartparens and
 electric-pair-mode never add or remove a second pair.
+
+* Structural editing
+
+slurp/barf/splice-style operations on the chunk at point.  Forms are
+found with the buffer's syntax table (`forward-sexp`), so atoms and
+chunks both work.
+
+| Keys    | Command                     | Effect                                |
+|---------+-----------------------------+---------------------------------------|
+| `C-c >` | `lnav-slurp-forward`        | pull next form in:  `(a) b` -> `(a b)` |
+| `C-c <` | `lnav-slurp-backward`       | pull previous form in: `a (b)` -> `(a b)` |
+| `C-c ]` | `lnav-barf-forward`         | push last form out: `(a b) c` -> `(a) b c` |
+| `C-c [` | `lnav-barf-backward`        | push first form out: `a (b c)` -> `a b (c)` |
+| `C-c k` | `lnav-kill-sexp`            | kill chunk including delimiters       |
+| `C-c t` | `lnav-transpose-sexp`       | swap chunk with next form: `(a) (b)` -> `(b) (a)` |
+| `C-c R` | `lnav-raise-sexp`           | replace parent with chunk: `(a (b) c)` -> `(b)` |
+| `C-c W` | `lnav-wrap-sexp`            | wrap chunk incl. delimiters: `(a)` -> `((a))` |
+| `C-c f` | `lnav-forward-sexp`         | move to end of next form              |
+| `C-c F` | `lnav-backward-sexp`        | move to start of previous form        |
+
+`lnav-delete-enclosing-pair` (`C-c x`) doubles as splice: it removes
+the current level's delimiters and keeps its contents.
+
+Wrap convenience commands: `lnav-wrap-round`, `lnav-wrap-curly`,
+`lnav-wrap-square`, `lnav-wrap-quote`.
+
+* Full smartparens surface
+
+Beyond slurp/barf/raise/transpose, lnav implements the rest of the
+smartparens structural command set (in `lnav-structural.el`):
+
+- `lnav-kill-hybrid-sexp` — kill content up to the closing delimiter
+- `lnav-delete-sexp`, `lnav-backward-delete-sexp`, `lnav-copy-sexp`,
+  `lnav-backward-copy-sexp`, `lnav-clone-sexp`
+- `lnav-splice-sexp-killing-backward/forward/around`
+- `lnav-convolute-sexp`, `lnav-swap-enclosing-sexp`
+- `lnav-emit-sexp`, `lnav-extract-before-sexp`, `lnav-extract-after-sexp`
+- `lnav-split-sexp`, `lnav-join-sexp`, `lnav-absorb-sexp`
+- `lnav-add-to-previous-sexp`, `lnav-add-to-next-sexp`
+- `lnav-change-inner`, `lnav-select-next-thing(-exchange)`
+- Navigation: `lnav-next-sexp`, `lnav-previous-sexp`,
+  `lnav-forward/backward-parallel-sexp`, `lnav-backward-up-sexp`,
+  `lnav-beginning/end-of-sexp` and next/previous variants,
+  `lnav-down-sexp`, `lnav-forward/backward-symbol`, `lnav-narrow-to-sexp`
+
+* Flash navigation
+
+Flash-style label jumping (flash.nvim inspired), native in lnav.
+
+| Keys    | Command                     | Effect                                  |
+|---------+-----------------------------+-----------------------------------------|
+| `C-c z` | `lnav-flash-chunk`          | labels on every chunk opening; jump     |
+| `C-c Z` | `lnav-flash-char`           | labels on occurrences of a character    |
+| `C-c /` | `lnav-flash-search`         | labels on regexp matches                |
+|         | `lnav-flash-fuzzy`          | labels on fuzzy subsequence matches     |
+|         | `lnav-flash-word`           | labels on word starts                   |
+|         | `lnav-flash-treesit`        | labels on treesit ancestor nodes        |
+
+Flow: invoke, then press a label to jump (RET jumps to the first
+match, ESC/C-g cancels).  When matches overflow the label alphabet,
+labels become two keys — type the first, then the second.
+
+Config: `lnav-flash-labels`, `lnav-flash-autojump`,
+`lnav-flash-multi-window` (flash across all visible windows),
+`lnav-flash-show-backdrop`.  Faces: `lnav-flash-label-face`,
+`lnav-flash-match-face`, `lnav-flash-backdrop-face`.
+
+* Typing, strict, and highlight
+
+Optional modes, all off by default:
+
+- `lnav-typing-mode` — auto-pairs open delimiters, skips an existing
+  closing delimiter, deletes an empty pair on backspace, and wraps an
+  active region when you type an opening delimiter.  Off by default
+  so parinfer-rust users are unaffected.
+- `lnav-strict-mode` — refuses deletions that would unbalance bracket
+  pairs.
+- `lnav-show-pair-mode` — highlights the matching delimiters of the
+  chunk at point.
+
+* Tags and cheat sheet
+
+- `lnav-wrap-tag`, `lnav-rewrap-tag` — wrap the chunk at point in
+  markup tags.
+- `lnav-cheat-sheet` — buffer listing every command by group.
 
 * Evil integration
 
@@ -110,6 +202,13 @@ Surround keys:
 | `gs` | surround region (visual) or chunk (normal) |
 | `gS` | delete enclosing pair       |
 | `gC` | change enclosing pair       |
+| `g(` / `g)` | slurp backward / forward |
+| `g{` / `g}` | barf backward / forward |
+| `gt` | transpose sexp             |
+| `gK` | kill sexp                  |
+| `gr` | raise sexp                 |
+| `gw` | wrap whole sexp            |
+| `gf` / `gb` | forward / backward sexp |
 
 All bindings are rebindable.
 
@@ -147,6 +246,9 @@ Rules:
 | `lnav-excluded-modes`    | nil                     | modes where `lnav-mode` is disabled    |
 | `lnav-enable-backward`   | t                       | enable backtab jumps                   |
 | `lnav-scan-distance`     | 32                      | chars to scan when matching multi-char pairs |
+| `lnav-flash-labels`      | home-row alphabet       | label alphabet for flash                     |
+| `lnav-flash-autojump`    | nil                     | jump when a single match remains             |
+| `lnav-flash-multi-window`| nil                     | flash across visible windows                 |
 
 Per-mode fallback:
 
@@ -161,7 +263,8 @@ Per-mode fallback:
 #+end_src
 
 Pass `-L <evil-dir>` on the load path to also run the evil text-object
-tests.
+tests.  The suite covers the chunk tree, tab jumps, structural
+editing, flash matching, and typing behavior (71 tests).
 
 * Limitations
 

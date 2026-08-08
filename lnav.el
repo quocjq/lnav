@@ -5,8 +5,8 @@
 ;; Author: lunixose <https://github.com/lunixose>
 ;; Maintainer: lunixose <lunixose@protonmail.com>
 ;; Keywords: convenience, editing
-;; Package-Requires: ((emacs "27.1"))
-;; Version: 0.3.0
+;; Package-Requires: ((emacs "29.1"))
+;; Version: 0.4.0
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -44,11 +44,30 @@
 ;;   C-c s   select chunk (inside)        C-c S   select chunk (around)
 ;;   C-c w   surround region/chunk        C-c x   delete enclosing pair
 ;;   C-c r   change enclosing pair
+;;   C-c >   slurp forward                C-c <   slurp backward
+;;   C-c ]   barf forward                 C-c [   barf backward
+;;   C-c k   kill sexp                    C-c t   transpose sexp
+;;   C-c R   raise sexp                   C-c W   wrap whole sexp
+;;   C-c f   forward sexp                 C-c F   backward sexp
+;;   C-c N   next sexp                    C-c P   previous sexp
+;;   C-c D   down sexp                    C-c U   up sexp
+;;   C-c h   kill hybrid sexp             C-c j   join sexp
+;;   C-c L   split sexp                   C-c m   select next thing
+;;   C-c z   flash chunks                 C-c Z   flash chars
+;;   C-c /   flash search
 ;;
 ;; In evil, `il' and `al' select the chunk inside / around point,
 ;; usable with any operator: `dil', `cil', `yal', etc.  `gs'
 ;; surrounds the region (visual) or chunk at point (normal), `gS'
-;; deletes the enclosing pair, `gC' changes it.  All rebindable.
+;; deletes the enclosing pair, `gC' changes it, `g(' / `g)'
+;; slurp, `g{' / `g}' barf, `gt' transpose, `gK' kill, `gr'
+;; raise, `gw' wrap, `gf' / `gb' move by form, `gz' / `gZ'
+;; flash chunks / chars.  All rebindable.
+;;
+;; Extra files: lnav-flash.el (flash label jumping, treesit flash),
+;; lnav-structural.el (smartparens-style commands), lnav-typing.el
+;; (auto-pair typing, strict mode), lnav-extras.el (pair highlight,
+;; tags, cheat sheet).  `lnav-cheat-sheet' lists everything.
 ;;
 ;; Chunk tree rules: 1-char bracket pairs (()[]{} and any distinct
 ;; open/close pair in `lnav-pairs') nest.  Quote pairs (same open
@@ -157,6 +176,30 @@ matching multi-char pairs."
     (define-key map (kbd "C-c w") #'lnav-surround)
     (define-key map (kbd "C-c x") #'lnav-delete-enclosing-pair)
     (define-key map (kbd "C-c r") #'lnav-change-enclosing-pair)
+    ;; Structural editing.
+    (define-key map (kbd "C-c <") #'lnav-slurp-backward)
+    (define-key map (kbd "C-c >") #'lnav-slurp-forward)
+    (define-key map (kbd "C-c [") #'lnav-barf-backward)
+    (define-key map (kbd "C-c ]") #'lnav-barf-forward)
+    (define-key map (kbd "C-c k") #'lnav-kill-sexp)
+    (define-key map (kbd "C-c t") #'lnav-transpose-sexp)
+    (define-key map (kbd "C-c R") #'lnav-raise-sexp)
+    (define-key map (kbd "C-c f") #'lnav-forward-sexp)
+    (define-key map (kbd "C-c F") #'lnav-backward-sexp)
+    (define-key map (kbd "C-c W") #'lnav-wrap-sexp)
+    ;; Form navigation.
+    (define-key map (kbd "C-c N") #'lnav-next-sexp)
+    (define-key map (kbd "C-c P") #'lnav-previous-sexp)
+    (define-key map (kbd "C-c D") #'lnav-down-sexp)
+    (define-key map (kbd "C-c U") #'lnav-backward-up-sexp)
+    (define-key map (kbd "C-c h") #'lnav-kill-hybrid-sexp)
+    (define-key map (kbd "C-c j") #'lnav-join-sexp)
+    (define-key map (kbd "C-c L") #'lnav-split-sexp)
+    (define-key map (kbd "C-c m") #'lnav-select-next-thing)
+    ;; Flash.
+    (define-key map (kbd "C-c z") #'lnav-flash-chunk)
+    (define-key map (kbd "C-c Z") #'lnav-flash-char)
+    (define-key map (kbd "C-c /") #'lnav-flash-search)
     map)
   "Keymap used by `lnav-mode'.")
 
@@ -190,6 +233,46 @@ If MODE is nil, sets the global default fallback (the `t' key)."
       (if entry
           (setcdr entry function)
         (push (cons key function) lnav-fallback-alist)))))
+
+;;; Pair Properties
+
+(defvar lnav-pair-property-alist nil
+  "Alist mapping an OPEN string to a plist of pair properties.
+Supported keys:
+  :wrap         function called when the open is typed over a region
+  :autoskip     non-nil to skip an existing close instead of doubling
+  :post-handlers list of functions run after the pair is inserted")
+
+(defun lnav-set-pair-property (open &rest props)
+  "Set pair property PROPS for OPEN (a key=value list)."
+  (setq lnav-pair-property-alist
+        (cl-remove open lnav-pair-property-alist :key #'car :test #'string=))
+  (push (cons open props) lnav-pair-property-alist))
+
+(defun lnav-pair-property (open key)
+  "Return property KEY for the pair with opener OPEN."
+  (plist-get (cdr (assoc open lnav-pair-property-alist)) key))
+
+;;;###autoload
+(defun lnav-local-pair (modes open close &rest props)
+  "Register OPEN/CLOSE pair only in MODES (a list of mode symbols).
+PROPS are pair properties (see `lnav-set-pair-property')."
+  (declare (indent 1))
+  (dolist (mode modes)
+    (add-hook (intern (format "%s-hook" mode))
+              (lambda ()
+                (when (derived-mode-p mode)
+                  (setq-local lnav-pairs
+                              (cons (cons open close) lnav-pairs))
+                  (when props
+                    (setq-local lnav-pair-property-alist
+                                (cons (cons open props)
+                                      lnav-pair-property-alist))))))))
+
+(defmacro lnav-with-delimiters (pairs &rest body)
+  "Run BODY with `lnav-pairs' bound to PAIRS."
+  (declare (indent 1))
+  `(let ((lnav-pairs ,pairs)) ,@body))
 
 ;;; Snippet / Completion Detection
 
@@ -674,6 +757,221 @@ DELIMITER's pair (see `lnav--delimiter-pair')."
     (insert (car pair))
     (goto-char (+ bopen (length (car pair))))))
 
+;;; Structural Editing
+
+(defun lnav--form-bounds-forward (pos)
+  "Return (BEG . END) of the form starting at or after POS.
+Whitespace is skipped.  What counts as a form is decided by the
+buffer's syntax table via `forward-sexp'."
+  (save-excursion
+    (goto-char pos)
+    (skip-chars-forward " \t\r\n")
+    (when (< (point) (point-max))
+      (let ((beg (point)))
+        (condition-case nil
+            (progn (forward-sexp 1) (cons beg (point)))
+          (scan-error nil))))))
+
+(defun lnav--form-bounds-backward (pos)
+  "Return (BEG . END) of the form ending at or before POS.
+Whitespace is skipped.  Syntax-table aware via `backward-sexp'."
+  (save-excursion
+    (goto-char pos)
+    (skip-chars-backward " \t\r\n")
+    (when (> (point) (point-min))
+      (let ((end (point)))
+        (condition-case nil
+            (progn (backward-sexp 1) (cons (point) end))
+          (scan-error nil))))))
+
+(defun lnav--last-form-in-chunk (chunk)
+  "Return (BEG . END) of the last form inside CHUNK, or nil."
+  (when-let ((bclose (lnav--chunk-before-close chunk)))
+    (save-excursion
+      (goto-char bclose)
+      (skip-chars-backward " \t\r\n")
+      (let ((end (point)))
+        (when (> end (lnav--chunk-after-open chunk))
+          (condition-case nil
+              (progn (backward-sexp 1) (cons (point) end))
+            (scan-error nil)))))))
+
+;;;###autoload
+(defun lnav-slurp-forward ()
+  "Pull the next form into the innermost chunk at point.
+`(a) b' -> `(a b)'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (close (lnav--chunk-close chunk))
+         (bclose (lnav--chunk-before-close chunk))
+         (form (and bclose
+                    (lnav--form-bounds-forward
+                     (lnav--chunk-after-close chunk)))))
+    (or form (user-error "Nothing to slurp"))
+    (let ((clen (length close)))
+      (delete-region bclose (+ bclose clen))
+      (goto-char (- (cdr form) clen))
+      (insert close))))
+
+;;;###autoload
+(defun lnav-slurp-backward ()
+  "Pull the previous form into the innermost chunk at point.
+`a (b)' -> `(a b)'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (open (lnav--chunk-open chunk))
+         (bopen (lnav--chunk-before-open chunk))
+         (form (lnav--form-bounds-backward bopen)))
+    (or form (user-error "Nothing to slurp"))
+    (let ((olen (length open)))
+      (delete-region bopen (+ bopen olen))
+      (goto-char (car form))
+      (insert open))))
+
+;;;###autoload
+(defun lnav-barf-forward ()
+  "Push the last form of the innermost chunk at point out past its
+close delimiter.  `(a b) c' -> `(a) b c'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (close (lnav--chunk-close chunk))
+         (bopen (lnav--chunk-before-open chunk))
+         (bclose (lnav--chunk-before-close chunk))
+         (last (and bclose (lnav--last-form-in-chunk chunk))))
+    (or last (user-error "Nothing to barf"))
+    (let ((ws-beg (save-excursion
+                    (goto-char (car last))
+                    (skip-chars-backward " \t\r\n")
+                    (point)))
+          (clen (length close)))
+      (when (<= ws-beg (+ bopen (length (lnav--chunk-open chunk))))
+        (user-error "Nothing to barf"))
+      (delete-region bclose (+ bclose clen))
+      (goto-char ws-beg)
+      (insert close))))
+
+;;;###autoload
+(defun lnav-barf-backward ()
+  "Push the first form of the innermost chunk at point out past its
+open delimiter.  `a (b c)' -> `a b (c)'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (open (lnav--chunk-open chunk))
+         (bopen (lnav--chunk-before-open chunk))
+         (bclose (lnav--chunk-before-close chunk))
+         (aopen (lnav--chunk-after-open chunk)))
+    (or bclose (user-error "Chunk not closed"))
+    (let* ((first-beg (save-excursion
+                        (goto-char aopen)
+                        (skip-chars-forward " \t\r\n")
+                        (point)))
+           (first-end (save-excursion
+                        (goto-char first-beg)
+                        (condition-case nil
+                            (progn (forward-sexp 1) (point))
+                          (scan-error nil))))
+           (ws-end (and first-end
+                        (save-excursion
+                          (goto-char first-end)
+                          (skip-chars-forward " \t\r\n")
+                          (point))))
+           (olen (length open)))
+      (or (and first-end ws-end (< ws-end bclose))
+          (user-error "Nothing to barf"))
+      (delete-region bopen (+ bopen olen))
+      (goto-char (- ws-end olen))
+      (insert open))))
+
+;;;###autoload
+(defun lnav-raise-sexp ()
+  "Replace the parent chunk at point with the innermost chunk.
+`(a (b) c)' with point inside `(b)' -> `(b)'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (parent (lnav--chunk-parent chunk)))
+    (or parent (user-error "No parent chunk"))
+    (let ((sexp (buffer-substring (lnav--chunk-before-open chunk)
+                                  (lnav--chunk-after-close chunk))))
+      (delete-region (lnav--chunk-before-open parent)
+                     (lnav--chunk-after-close parent))
+      (goto-char (lnav--chunk-before-open parent))
+      (insert sexp))))
+
+;;;###autoload
+(defun lnav-transpose-sexp ()
+  "Swap the chunk at point with the following form.
+`(a) (b)' -> `(b) (a)'."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (cur-beg (lnav--chunk-before-open chunk))
+         (cur-end (lnav--chunk-after-close chunk))
+         (next (lnav--form-bounds-forward cur-end)))
+    (or next (user-error "No next form"))
+    (let ((cur (buffer-substring cur-beg cur-end))
+          (nxt (buffer-substring (car next) (cdr next))))
+      (delete-region cur-beg (cdr next))
+      (goto-char cur-beg)
+      (insert nxt " " cur))))
+
+;;;###autoload
+(defun lnav-kill-sexp ()
+  "Kill the chunk at point including its delimiters."
+  (interactive "*")
+  (let ((chunk (lnav--chunk-required)))
+    (kill-region (lnav--chunk-before-open chunk)
+                 (lnav--chunk-after-close chunk))))
+
+;;;###autoload
+(defun lnav-forward-sexp ()
+  "Move to the end of the next form (chunk or atom)."
+  (interactive "^")
+  (let ((form (lnav--form-bounds-forward (point))))
+    (or form (user-error "No next form"))
+    (goto-char (cdr form))))
+
+;;;###autoload
+(defun lnav-backward-sexp ()
+  "Move to the start of the previous form (chunk or atom)."
+  (interactive "^")
+  (let ((form (lnav--form-bounds-backward (point))))
+    (or form (user-error "No previous form"))
+    (goto-char (car form))))
+
+;;;###autoload
+(defun lnav-wrap-sexp (delimiter)
+  "Wrap the chunk at point, delimiters included, in DELIMITER.
+`(a)' with `(' -> `((a))'.  See `lnav--delimiter-pair'."
+  (interactive (list (read-string "Delimiter: ")))
+  (let* ((chunk (lnav--chunk-required))
+         (pair (lnav--delimiter-pair delimiter)))
+    (lnav--wrap-region (lnav--chunk-before-open chunk)
+                       (lnav--chunk-after-close chunk)
+                       (car pair) (cdr pair))))
+
+;;;###autoload
+(defun lnav-wrap-round ()
+  "Wrap the chunk at point in parentheses."
+  (interactive "*")
+  (lnav-wrap-sexp "("))
+
+;;;###autoload
+(defun lnav-wrap-curly ()
+  "Wrap the chunk at point in braces."
+  (interactive "*")
+  (lnav-wrap-sexp "{"))
+
+;;;###autoload
+(defun lnav-wrap-square ()
+  "Wrap the chunk at point in brackets."
+  (interactive "*")
+  (lnav-wrap-sexp "["))
+
+;;;###autoload
+(defun lnav-wrap-quote ()
+  "Wrap the chunk at point in double quotes."
+  (interactive "*")
+  (lnav-wrap-sexp "\""))
+
 ;;; Evil Integration
 
 ;;;###autoload
@@ -708,5 +1006,10 @@ mode is in `lnav-excluded-modes'."
     (lnav-mode 1)))
 
 (provide 'lnav)
+
+(require 'lnav-flash)
+(require 'lnav-structural)
+(require 'lnav-typing)
+(require 'lnav-extras)
 
 ;;; lnav.el ends here

@@ -260,6 +260,305 @@
     (should (equal "(ab)" (buffer-string)))
     (smartparens-mode -1)))
 
+(ert-deftest lnav-slurp-forward ()
+  (lnav-test-with-buffer "(a) b"
+    (goto-char 2)
+    (lnav-slurp-forward)
+    (should (equal "(a b)" (buffer-string)))))
+
+(ert-deftest lnav-slurp-backward ()
+  (lnav-test-with-buffer "a (b)"
+    (goto-char 4)
+    (lnav-slurp-backward)
+    (should (equal "(a b)" (buffer-string)))))
+
+(ert-deftest lnav-barf-forward ()
+  (lnav-test-with-buffer "(a b) c"
+    (goto-char 2)
+    (lnav-barf-forward)
+    (should (equal "(a) b c" (buffer-string)))))
+
+(ert-deftest lnav-barf-backward ()
+  (lnav-test-with-buffer "a (b c)"
+    (goto-char 4)
+    (lnav-barf-backward)
+    (should (equal "a b (c)" (buffer-string)))))
+
+(ert-deftest lnav-raise-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-raise-sexp)
+    (should (equal "(b)" (buffer-string)))))
+
+(ert-deftest lnav-transpose-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-transpose-sexp)
+    (should (equal "(b) (a)" (buffer-string)))))
+
+(ert-deftest lnav-kill-sexp ()
+  (lnav-test-with-buffer "(a) b"
+    (goto-char 2)
+    (lnav-kill-sexp)
+    (should (equal " b" (buffer-string)))))
+
+(ert-deftest lnav-forward-backward-sexp ()
+  (lnav-test-with-buffer "(a) b"
+    (goto-char 1)
+    (lnav-forward-sexp)
+    (should (= 4 (point)))
+    (lnav-forward-sexp)
+    (should (= 6 (point)))
+    (lnav-backward-sexp)
+    (should (= 5 (point)))
+    (lnav-backward-sexp)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-wrap-sexp ()
+  (lnav-test-with-buffer "(a)"
+    (goto-char 2)
+    (lnav-wrap-sexp "(")
+    (should (equal "((a))" (buffer-string))))
+  (lnav-test-with-buffer "(a)"
+    (goto-char 2)
+    (lnav-wrap-round)
+    (should (equal "((a))" (buffer-string)))))
+
+;;; Flash
+
+(ert-deftest lnav-flash-chunk-matches ()
+  (lnav-test-with-buffer "(a(b)c) d (e)"
+    (let ((begs (mapcar (lambda (m) (plist-get m :beg))
+                        (lnav--flash-chunk-matches))))
+      (should (equal '(1 3 11) begs)))))
+
+(ert-deftest lnav-flash-char-matches ()
+  (lnav-test-with-buffer "a(b)ac"
+    (let ((begs (mapcar (lambda (m) (plist-get m :beg))
+                        (lnav--flash-char-matches ?a))))
+      (should (equal '(1 5) begs)))))
+
+(ert-deftest lnav-flash-word-matches ()
+  (lnav-test-with-buffer "foo bar"
+    (let ((begs (mapcar (lambda (m) (plist-get m :beg))
+                        (lnav--flash-word-matches))))
+      (should (equal '(1 5) begs)))))
+
+(ert-deftest lnav-flash-search-matches ()
+  (lnav-test-with-buffer "(ab) ab"
+    (let ((begs (mapcar (lambda (m) (plist-get m :beg))
+                        (lnav--flash-search-matches "ab"))))
+      (should (equal '(2 6) begs)))))
+
+(ert-deftest lnav-flash-fuzzy-p ()
+  (lnav-test-with-buffer "x"
+    (should (lnav--flash-fuzzy-p "abc" "axbyc"))
+    (should-not (lnav--flash-fuzzy-p "ac" "ab"))))
+
+(ert-deftest lnav-flash-assign-labels-single ()
+  (lnav-test-with-buffer "x"
+    (let ((lnav-flash-labels "abc"))
+      (let ((ms (lnav--flash-assign-labels '((:beg 1 :end 2) (:beg 3 :end 4)))))
+        (should (= ?a (plist-get (nth 0 ms) :l1)))
+        (should (= ?b (plist-get (nth 1 ms) :l1)))
+        (should-not (plist-get (nth 0 ms) :l2))))))
+
+(ert-deftest lnav-flash-assign-labels-two-char ()
+  (lnav-test-with-buffer "x"
+    (let ((lnav-flash-labels "abc"))
+      (let ((ms (lnav--flash-assign-labels
+                 '((:beg 1 :end 2) (:beg 3 :end 4) (:beg 5 :end 6) (:beg 7 :end 8)))))
+        (should (= ?a (plist-get (nth 0 ms) :l1)))
+        (should (= ?a (plist-get (nth 0 ms) :l2)))
+        (should (= ?b (plist-get (nth 1 ms) :l2)))
+        (should (= ?b (plist-get (nth 3 ms) :l1)))
+        (should (equal "ab" (lnav--flash-label-text (nth 1 ms))))))))
+
+;;; Structural
+
+(ert-deftest lnav-kill-hybrid-sexp ()
+  (lnav-test-with-buffer "(a b) c"
+    (goto-char 2)
+    (lnav-kill-hybrid-sexp)
+    (should (equal ") c" (buffer-string)))))
+
+(ert-deftest lnav-delete-sexp ()
+  (lnav-test-with-buffer "a b"
+    (goto-char 1)
+    (lnav-delete-sexp)
+    (should (equal " b" (buffer-string)))))
+
+(ert-deftest lnav-clone-sexp ()
+  (lnav-test-with-buffer "(a)"
+    (goto-char 2)
+    (lnav-clone-sexp)
+    (should (equal "(a) (a)" (buffer-string)))))
+
+(ert-deftest lnav-splice-sexp-killing-backward ()
+  (lnav-test-with-buffer "(x (a b) y)"
+    (goto-char 7)
+    (lnav-splice-sexp-killing-backward)
+    (should (equal "( a b y)" (buffer-string)))))
+
+(ert-deftest lnav-convolute-sexp ()
+  (lnav-test-with-buffer "(a (b c) d)"
+    (goto-char 6)
+    (lnav-convolute-sexp)
+    (should (equal "((a) b c d)" (buffer-string)))))
+
+(ert-deftest lnav-swap-enclosing-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-swap-enclosing-sexp)
+    (should (equal "((b) a c)" (buffer-string)))))
+
+(ert-deftest lnav-emit-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-emit-sexp)
+    (should (equal "(a c (b))" (buffer-string)))))
+
+(ert-deftest lnav-extract-after-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-extract-after-sexp)
+    (should (equal "(a c) (b)" (buffer-string)))))
+
+(ert-deftest lnav-split-sexp ()
+  (lnav-test-with-buffer "(ab)"
+    (goto-char 3)
+    (lnav-split-sexp)
+    (should (equal "(a) (b)" (buffer-string)))))
+
+(ert-deftest lnav-join-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-join-sexp)
+    (should (equal "(a b)" (buffer-string)))))
+
+(ert-deftest lnav-add-to-previous-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-add-to-previous-sexp)
+    (should (equal "(a (b))" (buffer-string)))))
+
+(ert-deftest lnav-add-to-next-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-add-to-next-sexp)
+    (should (equal "((a) b)" (buffer-string)))))
+
+(ert-deftest lnav-change-inner ()
+  (lnav-test-with-buffer "(ab)"
+    (goto-char 2)
+    (lnav-change-inner "x")
+    (should (equal "(x)" (buffer-string)))))
+
+;;; Navigation completeness
+
+(ert-deftest lnav-next-previous-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-next-sexp)
+    (should (= 5 (point)))
+    (lnav-previous-sexp)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-parallel-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-forward-parallel-sexp)
+    (should (= 5 (point)))
+    (lnav-backward-parallel-sexp)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-end-of-sexp ()
+  (lnav-test-with-buffer "(a)"
+    (goto-char 2)
+    (lnav-end-of-sexp)
+    (should (= 4 (point)))
+    (goto-char 2)
+    (lnav-beginning-of-sexp)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-down-sexp ()
+  (lnav-test-with-buffer "(a (b c))"
+    (goto-char 2)
+    (lnav-down-sexp)
+    (should (= 9 (point)))))
+
+(ert-deftest lnav-narrow-to-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-narrow-to-sexp)
+    (should (equal "(b)" (buffer-string)))))
+
+(ert-deftest lnav-backward-up-sexp ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-backward-up-sexp)
+    (should (= 1 (point)))))
+
+(ert-deftest lnav-beginning-of-next-sexp ()
+  (lnav-test-with-buffer "(a) (b)"
+    (goto-char 2)
+    (lnav-beginning-of-next-sexp)
+    (should (= 5 (point)))))
+
+(ert-deftest lnav-forward-symbol ()
+  (lnav-test-with-buffer "abc def"
+    (goto-char 1)
+    (lnav-forward-symbol)
+    (should (= 5 (point)))))
+
+(ert-deftest lnav-select-next-thing ()
+  (lnav-test-with-buffer "(a (b) c)"
+    (goto-char 6)
+    (lnav-select-next-thing)
+    (should (= 4 (region-beginning)))
+    (should (= 7 (region-end)))
+    (lnav-select-next-thing)
+    (should (= 1 (region-beginning)))
+    (should (= 10 (region-end)))))
+
+;;; Typing and strict
+
+(ert-deftest lnav-typing-auto-pair ()
+  (lnav-test-with-buffer ""
+    (insert "(")
+    (let ((lnav-typing-mode t))
+      (lnav-typing--post-self-insert))
+    (should (equal "()" (buffer-string)))
+    (should (= 2 (point)))))
+
+(ert-deftest lnav-typing-skip-close ()
+  (lnav-test-with-buffer "()"
+    (goto-char 2)
+    (insert ")")
+    (let ((lnav-typing-mode t))
+      (lnav-typing--post-self-insert))
+    (should (equal "()" (buffer-string)))
+    (should (= 3 (point)))))
+
+(ert-deftest lnav-typing-backspace-pair ()
+  (lnav-test-with-buffer "()"
+    (goto-char 2)
+    (let ((lnav-typing-mode t))
+      (lnav-typing--backward-delete-char))
+    (should (equal "(" (buffer-string)))))
+
+(ert-deftest lnav-balanced-p ()
+  (lnav-test-with-buffer "(a)"
+    (should (lnav--balanced-p)))
+  (lnav-test-with-buffer "(a"
+    (should-not (lnav--balanced-p))))
+
+(ert-deftest lnav-strict-blocks-unbalanced-delete ()
+  (lnav-test-with-buffer "(a)"
+    (let ((lnav-strict-mode t))
+      (should-error (lnav-strict--delete-region 1 2))
+      (lnav-strict--delete-region 1 4))))
+
 (provide 'lnav-test)
 
 ;;; lnav-test.el ends here

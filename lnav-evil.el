@@ -17,6 +17,18 @@
 (declare-function lnav-surround "lnav" (delimiter))
 (declare-function lnav-delete-enclosing-pair "lnav" ())
 (declare-function lnav-change-enclosing-pair "lnav" (delimiter))
+(declare-function lnav-slurp-forward "lnav" ())
+(declare-function lnav-slurp-backward "lnav" ())
+(declare-function lnav-barf-forward "lnav" ())
+(declare-function lnav-barf-backward "lnav" ())
+(declare-function lnav-raise-sexp "lnav" ())
+(declare-function lnav-transpose-sexp "lnav" ())
+(declare-function lnav-kill-sexp "lnav" ())
+(declare-function lnav-forward-sexp "lnav" ())
+(declare-function lnav-backward-sexp "lnav" ())
+(declare-function lnav-wrap-sexp "lnav" (delimiter))
+(declare-function lnav-flash-chunk "lnav-flash" ())
+(declare-function lnav-flash-char "lnav-flash" ())
 
 (defun lnav--evil-chunk-range (inside)
   "Return (BEG END) for the chunk at point for evil text objects.
@@ -49,6 +61,32 @@ INSIDE non-nil excludes the delimiters."
 (define-key evil-normal-state-map (kbd "gS") #'lnav-delete-enclosing-pair)
 ;;;###autoload
 (define-key evil-normal-state-map (kbd "gC") #'lnav-change-enclosing-pair)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "g(") #'lnav-slurp-backward)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "g)") #'lnav-slurp-forward)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "g{") #'lnav-barf-backward)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "g}") #'lnav-barf-forward)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gt") #'lnav-transpose-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gK") #'lnav-kill-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gr") #'lnav-raise-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gw") #'lnav-wrap-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gf") #'lnav-forward-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gb") #'lnav-backward-sexp)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gz") #'lnav-flash-chunk)
+;;;###autoload
+(define-key evil-visual-state-map (kbd "gz") #'lnav-flash-chunk)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gZ") #'lnav-flash-char)
 
 (provide 'lnav-evil)
 

@@ -6,7 +6,7 @@
 ;; Maintainer: lunixose <lunixose@protonmail.com>
 ;; Keywords: convenience, editing
 ;; Package-Requires: ((emacs "27.1"))
-;; Version: 0.1.0
+;; Version: 0.3.0
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -25,14 +25,39 @@
 
 ;;; Commentary:
 ;;
-;; `lnav' provides mode-agnostic navigation through bracketed
-;; structures via <tab> and <backtab>.
+;; `lnav' provides mode-agnostic navigation and editing through
+;; bracketed structures via <tab> and <backtab>, plus a chunk model
+;; where each pair ((), [], {}, quotes, ...) is a chunk that can nest.
 ;;
 ;;   {|       -> {|}       (tab-in)
 ;;   {|}      -> {}|       (tab-out)
 ;;   |{}      -> {|}       (tab-in)
 ;;   |{}      -> {}|       (two taps)
 ;;   {}|      -> {|       (backtab-into-empty)
+;;
+;; Chunk navigation (per chunk, four positions):
+;;
+;;   C-c n   next chunk boundary          C-c p   previous chunk boundary
+;;   C-c b   jump before open             C-c a   jump after open
+;;   C-c c   jump before close            C-c d   jump after close
+;;   C-c i   descend into first child     C-c o   ascend to parent
+;;   C-c s   select chunk (inside)        C-c S   select chunk (around)
+;;   C-c w   surround region/chunk        C-c x   delete enclosing pair
+;;   C-c r   change enclosing pair
+;;
+;; In evil, `il' and `al' select the chunk inside / around point,
+;; usable with any operator: `dil', `cil', `yal', etc.  `gs'
+;; surrounds the region (visual) or chunk at point (normal), `gS'
+;; deletes the enclosing pair, `gC' changes it.  All rebindable.
+;;
+;; Chunk tree rules: 1-char bracket pairs (()[]{} and any distinct
+;; open/close pair in `lnav-pairs') nest.  Quote pairs (same open
+;; and close char) are non-nesting leaves toggling open/close at
+;; their bracket nesting level, matching vim `i"' semantics.  This
+;; is approximate: quotes inside strings (e.g. the apostrophe in
+;; "don't" while a double quote is open) may mis-pair.  Multi-char
+;; pairs (LaTeX \begin{}, markdown **) participate in tab jump but
+;; not in the chunk tree.
 ;;
 ;; Works in any major mode; only the *fallback* (what TAB does when no
 ;; pair is in scope) is mode-aware.  Default fallback is
@@ -49,6 +74,10 @@
 ;; Or customize `lnav-pairs' directly.  Per-mode fallbacks:
 ;;
 ;;   (lnav-set-fallback #'org-cycle 'org-mode)
+;;
+;; Run the test suite with:
+;;
+;;   emacs -Q --batch -L . -l lnav-test.el -f ert-run-tests-batch-and-exit
 
 ;;; Code:
 
@@ -113,9 +142,21 @@ matching multi-char pairs."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<tab>")    #'lnav-jump-forward)
     (define-key map (kbd "<backtab>") #'lnav-jump-backward)
-    ;; Chunk navigation (testing; remap or remove after evaluation).
+    ;; Chunk navigation.
     (define-key map (kbd "C-c n") #'lnav-next-chunk)
     (define-key map (kbd "C-c p") #'lnav-previous-chunk)
+    (define-key map (kbd "C-c b") #'lnav-jump-before-open)
+    (define-key map (kbd "C-c a") #'lnav-jump-after-open)
+    (define-key map (kbd "C-c c") #'lnav-jump-before-close)
+    (define-key map (kbd "C-c d") #'lnav-jump-after-close)
+    (define-key map (kbd "C-c i") #'lnav-chunk-in)
+    (define-key map (kbd "C-c o") #'lnav-chunk-out)
+    (define-key map (kbd "C-c s") #'lnav-select-chunk)
+    (define-key map (kbd "C-c S") #'lnav-select-chunk-around)
+    ;; Editing.
+    (define-key map (kbd "C-c w") #'lnav-surround)
+    (define-key map (kbd "C-c x") #'lnav-delete-enclosing-pair)
+    (define-key map (kbd "C-c r") #'lnav-change-enclosing-pair)
     map)
   "Keymap used by `lnav-mode'.")
 
@@ -315,69 +356,120 @@ back if none is in scope.  Symmetric to `lnav-jump-forward'."
   (and (= 1 (length (car pair)))
        (= 1 (length (cdr pair)))))
 
-(defun lnav--open-char-p (ch)
-  "Non-nil if CH is a registered 1-char opening bracket."
-  (when ch
-    (cl-find-if (lambda (pair)
-                  (and (lnav--char-pair-p pair)
-                       (= ch (aref (car pair) 0))))
-                lnav-pairs)))
+(defun lnav--bracket-open-close-alist ()
+  "Alist of (CHAR . CLOSE-CHAR) for 1-char bracket pairs whose
+open and close differ.  These nest in the chunk tree."
+  (cl-loop for (open . close) in lnav-pairs
+           when (and (= 1 (length open)) (= 1 (length close))
+                     (not (string= open close)))
+           collect (cons (aref open 0) (aref close 0))))
 
-(defun lnav--matching-close-char (open-char)
-  "Return the close char matching OPEN-CHAR, or nil.  Only
-considers 1-char pairs."
-  (let ((pair (cl-find-if (lambda (p)
-                            (and (lnav--char-pair-p p)
-                                 (= open-char (aref (car p) 0))))
-                          lnav-pairs)))
-    (and pair (aref (cdr pair) 0))))
+(defun lnav--quote-chars ()
+  "List of 1-char pair chars whose open and close are equal.
+These act as non-nesting toggles: each char alternates open and
+close at its nesting level."
+  (cl-loop for (open . close) in lnav-pairs
+           when (and (= 1 (length open)) (= 1 (length close))
+                     (string= open close))
+           collect (aref open 0)))
+
+(cl-defstruct (lnav--chunk (:constructor lnav--chunk-create))
+  "A single pair treated as a navigation chunk."
+  open close before-open after-open before-close after-close parent children)
+
+(defun lnav--parse-chunk-tree ()
+  "Parse the buffer into a tree of `lnav--chunk' nodes.
+
+Each 1-char bracket pair ()[]{} becomes a chunk; chunks nest.
+Quote pairs (same open/close char) are non-nesting leaves: each
+occurrence toggles open/close at its bracket nesting level, and
+the nearest open quote of the same char is closed.  Multi-char
+pairs are ignored.  Unmatched brackets degrade gracefully: the
+chunk keeps its open positions and a nil close."
+  (let* ((brackets (lnav--bracket-open-close-alist))
+         (quotes (lnav--quote-chars))
+         (stack nil)
+         (roots nil)
+         (pos 1))
+    (while (< pos (point-max))
+      (let* ((ch (char-after pos))
+             (open-bracket (assoc ch brackets))
+             (close-bracket (rassoc ch brackets)))
+        (cond
+         (open-bracket
+          (let ((node (lnav--chunk-create
+                       :open (char-to-string ch)
+                       :close (char-to-string (cdr open-bracket))
+                       :before-open pos
+                       :after-open (1+ pos))))
+            (if stack
+                (progn
+                  (setf (lnav--chunk-parent node) (car stack))
+                  (setf (lnav--chunk-children (car stack))
+                        (nconc (lnav--chunk-children (car stack)) (list node))))
+              (push node roots))
+            (push node stack)))
+         ((memq ch quotes)
+          (let ((idx (cl-position-if
+                      (lambda (n)
+                        (and (not (assoc (aref (lnav--chunk-open n) 0) brackets))
+                             (= (aref (lnav--chunk-open n) 0) ch)))
+                      stack)))
+            (if idx
+                (let ((node (nth idx stack)))
+                  (setf (lnav--chunk-before-close node) pos
+                        (lnav--chunk-after-close node) (1+ pos))
+                  (setq stack (cl-subseq stack (1+ idx))))
+              (let ((node (lnav--chunk-create
+                           :open (char-to-string ch)
+                           :close (char-to-string ch)
+                           :before-open pos
+                           :after-open (1+ pos))))
+                (if stack
+                    (progn
+                      (setf (lnav--chunk-parent node) (car stack))
+                      (setf (lnav--chunk-children (car stack))
+                            (nconc (lnav--chunk-children (car stack)) (list node))))
+                  (push node roots))
+                (push node stack)))))
+         (close-bracket
+          (let ((idx (cl-position-if
+                      (lambda (n)
+                        (= (aref (lnav--chunk-open n) 0) (car close-bracket)))
+                      stack)))
+            (when idx
+              (let ((node (nth idx stack)))
+                (setf (lnav--chunk-before-close node) pos
+                      (lnav--chunk-after-close node) (1+ pos))
+                (setq stack (cl-subseq stack (1+ idx)))))))))
+        (setq pos (1+ pos)))
+    (nreverse roots)))
 
 (defun lnav--chunk-boundaries ()
   "Return a sorted list of chunk-boundary positions in the current
 buffer.  A boundary is one of:
   - position 1 (start of buffer)
   - point-max (end of buffer)
-  - immediately before an opening bracket at chunk 0 (root level)
-  - immediately after any opening bracket
-  - immediately before a closing bracket that matches the current chunk
-
-Multi-char pairs are ignored.  Unmatched brackets degrade
-gracefully."
-  (let* ((max-pos (point-max))
-         (boundaries (list 1 max-pos))
-         (stack '()))
-    (save-excursion
-      (goto-char 1)
-      (let ((bpos 1))
-        (while (< bpos max-pos)
-          (let* ((ch (char-after bpos))
-                 (top (car stack))
-                 (mc (and top (lnav--matching-close-char top))))
-            (cond
-             ;; Stack-top matches this char as its close: closing bracket.
-             ((and mc (= mc ch))
-              (push bpos boundaries)
-              (pop stack))
-             ;; This char is an opening bracket.
-             ((lnav--open-char-p ch)
-              (when (null stack)
-                (push bpos boundaries))
-              (push (1+ bpos) boundaries)
-              (push ch stack)))
-            (setq bpos (1+ bpos))))))
-    (sort (delete-dups boundaries) #'<)))
+  - immediately before or after the opening of any chunk
+  - immediately before or after the closing of any closed chunk"
+  (let ((bounds (list 1 (point-max))))
+    (cl-labels ((walk (node)
+                 (push (lnav--chunk-before-open node) bounds)
+                 (push (lnav--chunk-after-open node) bounds)
+                 (when (lnav--chunk-before-close node)
+                   (push (lnav--chunk-before-close node) bounds)
+                   (push (lnav--chunk-after-close node) bounds))
+                 (dolist (child (lnav--chunk-children node))
+                   (walk child))))
+      (dolist (root (lnav--parse-chunk-tree))
+        (walk root)))
+    (sort (delete-dups bounds) #'<)))
 
 ;;;###autoload
 (defun lnav-next-chunk ()
-  "Move cursor to the next chunk boundary.
-
-A chunk boundary is a position immediately inside an opening
-bracket, immediately outside a closing bracket, or immediately
-before a root-level opening bracket.  See
-`lnav--chunk-boundaries' for the precise definition.
-
-If the cursor is already at the last boundary, moves to end of
-buffer."
+  "Move cursor to the next chunk boundary.  See
+`lnav--chunk-boundaries'.  If the cursor is already at the last
+boundary, moves to end of buffer."
   (interactive "^")
   (let ((target (or (cl-find-if (lambda (b) (> b (point)))
                                 (lnav--chunk-boundaries))
@@ -395,6 +487,198 @@ boundary, moves to start of buffer."
       (when (< b (point))
         (setq target b)))
     (goto-char target)))
+
+(defun lnav--chunk-at-point (&optional pos)
+  "Return the innermost chunk containing POS (default point), or
+nil.  An unclosed chunk is treated as extending to end of buffer."
+  (let ((pos (or pos (point)))
+        (found nil))
+    (cl-labels ((walk (node)
+                 (when (and (<= (lnav--chunk-before-open node) pos)
+                            (< pos (or (lnav--chunk-after-close node)
+                                       (1+ (point-max)))))
+                   (setq found node)
+                   (dolist (child (lnav--chunk-children node))
+                     (walk child)))))
+      (dolist (root (lnav--parse-chunk-tree))
+        (walk root)))
+    found))
+
+(defun lnav--chunk-required ()
+  "Return the innermost chunk at point, or signal a user-error."
+  (or (lnav--chunk-at-point)
+      (user-error "No chunk at point")))
+
+;;;###autoload
+(defun lnav-jump-before-open ()
+  "Move to immediately before the opening delimiter of the
+innermost chunk containing point."
+  (interactive "*")
+  (goto-char (lnav--chunk-before-open (lnav--chunk-required))))
+
+;;;###autoload
+(defun lnav-jump-after-open ()
+  "Move to immediately after the opening delimiter of the
+innermost chunk containing point."
+  (interactive "*")
+  (goto-char (lnav--chunk-after-open (lnav--chunk-required))))
+
+;;;###autoload
+(defun lnav-jump-before-close ()
+  "Move to immediately before the closing delimiter of the
+innermost chunk containing point."
+  (interactive "*")
+  (let ((chunk (lnav--chunk-required)))
+    (or (lnav--chunk-before-close chunk)
+        (user-error "Chunk not closed"))
+    (goto-char (lnav--chunk-before-close chunk))))
+
+;;;###autoload
+(defun lnav-jump-after-close ()
+  "Move to immediately after the closing delimiter of the
+innermost chunk containing point."
+  (interactive "*")
+  (let ((chunk (lnav--chunk-required)))
+    (or (lnav--chunk-after-close chunk)
+        (user-error "Chunk not closed"))
+    (goto-char (lnav--chunk-after-close chunk))))
+
+;;;###autoload
+(defun lnav-chunk-in ()
+  "Descend into the first child chunk of the chunk at point."
+  (interactive "*")
+  (let ((kids (lnav--chunk-children (lnav--chunk-required))))
+    (if kids
+        (goto-char (lnav--chunk-before-open (car kids)))
+      (user-error "No child chunk"))))
+
+;;;###autoload
+(defun lnav-chunk-out ()
+  "Ascend to the start of the parent chunk of the chunk at point."
+  (interactive "*")
+  (let ((parent (lnav--chunk-parent (lnav--chunk-required))))
+    (if parent
+        (goto-char (lnav--chunk-before-open parent))
+      (user-error "No parent chunk"))))
+
+;;;###autoload
+(defun lnav-select-chunk ()
+  "Select the contents of the chunk at point (inside the
+delimiters) with the region."
+  (interactive "*")
+  (let ((chunk (lnav--chunk-required)))
+    (or (lnav--chunk-before-close chunk)
+        (user-error "Chunk not closed"))
+    (push-mark (lnav--chunk-before-close chunk) t t)
+    (goto-char (lnav--chunk-after-open chunk))))
+
+;;;###autoload
+(defun lnav-select-chunk-around ()
+  "Select the chunk at point including its delimiters with the
+region."
+  (interactive "*")
+  (let ((chunk (lnav--chunk-required)))
+    (or (lnav--chunk-after-close chunk)
+        (user-error "Chunk not closed"))
+    (push-mark (lnav--chunk-after-close chunk) t t)
+    (goto-char (lnav--chunk-before-open chunk))))
+
+;;; Editing Operations
+
+(defun lnav--delimiter-pair (delimiter)
+  "Return (OPEN . CLOSE) for DELIMITER.  If DELIMITER matches a
+registered open or close in `lnav-pairs', its mate is used;
+otherwise DELIMITER wraps itself (e.g. `\"' gives (\"\" . \"\"'))."
+  (cond
+   ((assoc delimiter lnav-pairs)
+    (cons delimiter (cdr (assoc delimiter lnav-pairs))))
+   ((rassoc delimiter lnav-pairs)
+    (cons (car (rassoc delimiter lnav-pairs)) delimiter))
+   (t (cons delimiter delimiter))))
+
+(defun lnav--wrap-region (beg end open close &optional reselect)
+  "Wrap region BEG..END with OPEN and CLOSE, leaving point after
+OPEN.  With RESELECT non-nil, leaves the full wrapped region
+selected instead."
+  (let ((open-len (length open))
+        (close-len (length close)))
+    (goto-char end)
+    (insert close)
+    (goto-char beg)
+    (insert open)
+    (if reselect
+        (progn
+          (push-mark (+ end open-len close-len) t t)
+          (goto-char beg))
+      (goto-char (+ beg open-len)))))
+
+;;;###autoload
+(defun lnav-surround (delimiter)
+  "Wrap the active region, or the chunk at point, in DELIMITER.
+
+DELIMITER is a string.  If it names a registered open or close in
+`lnav-pairs', its registered mate is used; otherwise DELIMITER
+wraps itself (e.g. `\"' gives \"\").  Multi-char delimiters work.
+
+With an active region, wraps the region (re-selecting it).  With
+no region, wraps the contents of the innermost chunk at point.
+
+Editing is done with programmatic insert, so smartparens and
+electric-pair-mode (which only act on self-insert) never add a
+second pair."
+  (interactive (list (read-string "Delimiter: ")))
+  (let* ((pair (lnav--delimiter-pair delimiter))
+         (open (car pair))
+         (close (cdr pair)))
+    (if (use-region-p)
+        (lnav--wrap-region (region-beginning) (region-end) open close t)
+      (let ((chunk (lnav--chunk-required)))
+        (or (lnav--chunk-before-close chunk)
+            (user-error "Chunk not closed"))
+        (lnav--wrap-region (lnav--chunk-after-open chunk)
+                           (lnav--chunk-before-close chunk)
+                           open close)))))
+
+;;;###autoload
+(defun lnav-delete-enclosing-pair ()
+  "Remove the delimiters of the innermost chunk at point, keeping
+its contents.  Point moves to the start of the former contents."
+  (interactive "*")
+  (let* ((chunk (lnav--chunk-required))
+         (open (lnav--chunk-open chunk))
+         (close (lnav--chunk-close chunk))
+         (bopen (lnav--chunk-before-open chunk))
+         (bclose (lnav--chunk-before-close chunk)))
+    (or bclose (user-error "Chunk not closed"))
+    (delete-region bclose (+ bclose (length close)))
+    (delete-region bopen (+ bopen (length open)))
+    (goto-char bopen)))
+
+;;;###autoload
+(defun lnav-change-enclosing-pair (delimiter)
+  "Replace the delimiters of the innermost chunk at point with
+DELIMITER's pair (see `lnav--delimiter-pair')."
+  (interactive (list (read-string "New delimiter: ")))
+  (let* ((chunk (lnav--chunk-required))
+         (pair (lnav--delimiter-pair delimiter))
+         (old-open (lnav--chunk-open chunk))
+         (old-close (lnav--chunk-close chunk))
+         (bopen (lnav--chunk-before-open chunk))
+         (bclose (lnav--chunk-before-close chunk)))
+    (or bclose (user-error "Chunk not closed"))
+    (goto-char bclose)
+    (delete-region bclose (+ bclose (length old-close)))
+    (insert (cdr pair))
+    (goto-char bopen)
+    (delete-region bopen (+ bopen (length old-open)))
+    (insert (car pair))
+    (goto-char (+ bopen (length (car pair))))))
+
+;;; Evil Integration
+
+;;;###autoload
+(with-eval-after-load 'evil
+  (require 'lnav-evil))
 
 ;;; Minor Mode
 

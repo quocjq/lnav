@@ -1,0 +1,55 @@
+;;; lnav-evil.el --- Evil text objects for lnav -*- lexical-binding: t; -*-
+;;
+;; Loaded by `lnav' once evil is present.  Defines the text
+;; objects `il' (inside chunk) and `al' (around chunk), usable
+;; with any operator: dil, cil, yal, ...
+
+;;; Code:
+
+(eval-when-compile
+  (require 'evil nil t))
+
+(declare-function lnav--chunk-at-point "lnav" (&optional pos))
+(declare-function lnav--chunk-after-open "lnav" (chunk))
+(declare-function lnav--chunk-before-open "lnav" (chunk))
+(declare-function lnav--chunk-before-close "lnav" (chunk))
+(declare-function lnav--chunk-after-close "lnav" (chunk))
+(declare-function lnav-surround "lnav" (delimiter))
+(declare-function lnav-delete-enclosing-pair "lnav" ())
+(declare-function lnav-change-enclosing-pair "lnav" (delimiter))
+
+(defun lnav--evil-chunk-range (inside)
+  "Return (BEG END) for the chunk at point for evil text objects.
+INSIDE non-nil excludes the delimiters."
+  (let ((chunk (lnav--chunk-at-point)))
+    (when chunk
+      (let ((beg (if inside (lnav--chunk-after-open chunk)
+                   (lnav--chunk-before-open chunk)))
+            (end (if inside (lnav--chunk-before-close chunk)
+                   (lnav--chunk-after-close chunk))))
+        (when (and beg end)
+          (list beg end))))))
+
+(with-no-warnings
+  ;;;###autoload
+  (evil-define-text-object lnav-evil-inside-chunk (count &optional beg end type)
+    (lnav--evil-chunk-range t))
+
+  ;;;
+  (evil-define-text-object lnav-evil-around-chunk (count &optional beg end type)
+    (lnav--evil-chunk-range nil))
+
+  (define-key evil-inner-text-objects-map "l" #'lnav-evil-inside-chunk)
+  (define-key evil-outer-text-objects-map "l" #'lnav-evil-around-chunk))
+
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gs") #'lnav-surround)
+(define-key evil-visual-state-map (kbd "gs") #'lnav-surround)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gS") #'lnav-delete-enclosing-pair)
+;;;###autoload
+(define-key evil-normal-state-map (kbd "gC") #'lnav-change-enclosing-pair)
+
+(provide 'lnav-evil)
+
+;;; lnav-evil.el ends here
